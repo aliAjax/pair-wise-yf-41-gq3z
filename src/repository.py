@@ -54,6 +54,17 @@ class SQLiteRepository:
                     created_at TEXT NOT NULL,
                     PRIMARY KEY(actor_id, idem_key)
                 );
+                CREATE TABLE IF NOT EXISTS entity_versions (
+                    entity_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(entity_id, version)
+                );
+                CREATE INDEX IF NOT EXISTS idx_versions_entity
+                    ON entity_versions(entity_id, version);
             """)
 
     @staticmethod
@@ -77,6 +88,11 @@ class SQLiteRepository:
                 "INSERT INTO entities(id, kind, status, version, data, created_by, created_at, updated_at) "
                 "VALUES (?, ?, ?, 1, ?, ?, ?, ?)",
                 (entity_id, kind, status, payload, actor_id, now, now),
+            )
+            connection.execute(
+                "INSERT INTO entity_versions(entity_id, version, status, data, created_by, created_at) "
+                "VALUES (?, 1, ?, ?, ?, ?)",
+                (entity_id, status, payload, actor_id, now),
             )
         return self.get_entity(entity_id)
 
@@ -110,7 +126,7 @@ class SQLiteRepository:
             if (entity["id"] == value if field == "id" else entity["data"].get(field) == value)
         ]
 
-    def update_entity(self, entity_id, expected_version, status, data):
+    def update_entity(self, entity_id, expected_version, status, data, actor_id=None):
         now = utcnow()
         payload = json.dumps(data, ensure_ascii=False, sort_keys=True)
         connection = self._connect()
@@ -127,10 +143,16 @@ class SQLiteRepository:
                     "version conflict: expected %s, found %s"
                     % (expected_version, current_version)
                 )
+            next_version = current_version + 1
             connection.execute(
                 "UPDATE entities SET status = ?, version = version + 1, data = ?, updated_at = ? "
                 "WHERE id = ? AND version = ?",
                 (status, payload, now, entity_id, current_version),
+            )
+            connection.execute(
+                "INSERT INTO entity_versions(entity_id, version, status, data, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (entity_id, next_version, status, payload, actor_id or "", now),
             )
             connection.commit()
         except Exception:
@@ -139,6 +161,27 @@ class SQLiteRepository:
         finally:
             connection.close()
         return self.get_entity(entity_id)
+
+    def list_versions(self, entity_id):
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT v.*, e.kind FROM entity_versions v "
+                "JOIN entities e ON e.id = v.entity_id "
+                "WHERE v.entity_id = ? ORDER BY v.version",
+                (entity_id,),
+            ).fetchall()
+        return [
+            {
+                "entity_id": row["entity_id"],
+                "kind": row["kind"],
+                "version": int(row["version"]),
+                "status": row["status"],
+                "data": json.loads(row["data"]),
+                "created_by": row["created_by"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
 
     def append_audit(self, entity_id, actor_id, actor_role, action, from_status, to_status, detail):
         with self._connect() as connection:

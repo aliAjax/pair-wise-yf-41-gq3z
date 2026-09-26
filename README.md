@@ -37,6 +37,19 @@ python3 app.py --db ./data.db --port 8307
 
 请求身份通过`X-User-Id`和`X-Role`请求头传入。创建和动作的可执行角色由规则引擎控制。
 
+## 关联质量关口
+
+事件执行`associate`时按统一口径评估报文，结果一次性固化为`association`快照（采用报文、存疑报文、质量分、口径指标、固化版本与时间），此后复核、发布、修订都改不动；重复`associate`或在动作载荷中夹带快照均被拒绝。
+
+- 同一台站重复上报：只保留时间偏移绝对值更小的一份，持平保留先到者，另一份计入去重。
+- 存疑：保留报文的时间偏移绝对值超过120秒或距离超过3公里时标记`suspect`，不计入有效报文。
+- 质量分：`100 × 有效报文数 / 原始报文数`。
+- 复核闸门：有效报文少于3条，或有效报文平均距离超过2公里时，`review`被拒绝；仅管理员可在`override_reason`中写明依据后放行，放行信息随版本留痕。
+- 事件列表按`?stage=candidate|review|published`区分候选、待复核（associated/reviewed）、已发布（published/revised/withdrawn）。
+- `GET /api/entities/<id>/detail`返回摘要、固化质量信息与历史版本；`GET /api/entities/<id>/versions`仅返回版本时间线；`GET /api/audit?entity_id=<id>`按实体过滤审计。
+
+演示页面在三栏分区之外，还展示报文级判定（有效/存疑/去重）、管理员放行依据与每个历史版本的摘要。
+
 ## 测试
 
 ```bash

@@ -13,6 +13,42 @@ from .domain import (
     ValidationError,
     Actor,
 )
+from .rules import EVENT_STAGES, event_stage, event_summary
+
+
+STAGE_STATUSES = {
+    stage: set(statuses)
+    for stage, _label, statuses in EVENT_STAGES
+}
+
+
+def _list_payload(service, kind, query):
+    normalized = service.rules.normalize_kind(kind)
+    status = query.get("status", [None])[0]
+    stage = query.get("stage", [None])[0]
+    stage = stage if normalized == "event" and stage in STAGE_STATUSES else None
+    if status:
+        items = service.list(normalized, status=status)
+    elif stage:
+        items = [
+            item
+            for item in service.list(normalized)
+            if item.get("status") in STAGE_STATUSES[stage]
+        ]
+    else:
+        items = service.list(normalized)
+    enriched = []
+    for item in items:
+        view = {"id": item["id"], "kind": item["kind"], "status": item["status"],
+                "version": item["version"], "updated_at": item["updated_at"]}
+        if normalized == "event":
+            view["stage"] = event_stage(item["status"])
+            view["summary"] = event_summary(item)
+        enriched.append(view)
+    if stage:
+        labels = {name: label for name, label, _ in EVENT_STAGES}
+        return {"stage": stage, "stage_label": labels.get(stage, stage), "items": enriched}
+    return {"items": enriched}
 
 
 def _json_bytes(payload):
@@ -84,7 +120,15 @@ def create_handler(service, rules, static_dir):
                     with open(index, "r", encoding="utf-8") as handle:
                         return self._send_html(200, handle.read())
                 if parts == ["api", "audit"]:
-                    return self._send(200, {"items": service.audit_log()})
+                    query = parse_qs(parsed.query)
+                    entity_id = query.get("entity_id", [None])[0]
+                    return self._send(200, {"items": service.audit_log(entity_id)})
+                if len(parts) == 4 and parts[:2] == ["api", "entities"]:
+                    if parts[3] == "detail":
+                        return self._send(200, service.detail(parts[2]))
+                    if parts[3] == "versions":
+                        return self._send(200, {"items": service.versions(parts[2])})
+                    raise NotFoundError("not found")
                 if len(parts) == 3 and parts[:2] == ["api", "entities"]:
                     return self._send(200, service.get(parts[2]))
                 if len(parts) >= 2 and parts[0] == "api":
@@ -93,11 +137,7 @@ def create_handler(service, rules, static_dir):
                     if len(parts) == 3:
                         return self._send(200, service.get(parts[2]))
                     query = parse_qs(parsed.query)
-                    status = query.get("status", [None])[0]
-                    return self._send(
-                        200,
-                        {"items": service.list(parts[1], status=status)},
-                    )
+                    return self._send(200, _list_payload(service, parts[1], query))
                 raise NotFoundError("not found")
             except Exception as exc:
                 self._fail(exc)

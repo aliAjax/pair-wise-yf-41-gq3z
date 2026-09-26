@@ -1,8 +1,8 @@
 from uuid import uuid4
 
 from .audit import AuditTrail
-from .domain import ConflictError, NotFoundError
-from .rules import RuleEngine
+from .domain import ConflictError, NotFoundError, ValidationError
+from .rules import RuleEngine, event_summary
 
 
 class DomainService:
@@ -45,24 +45,53 @@ class DomainService:
         next_status, patch = self.rules.validate_transition(
             actor, entity, action, dict(data or {}), self._lookup
         )
+        self._ensure_frozen_association(entity, action, patch)
         merged = dict(entity["data"])
         merged.update(patch)
-        updated = self.repository.update_entity(entity_id, expected, next_status, merged)
+        updated = self.repository.update_entity(
+            entity_id, expected, next_status, merged, actor.user_id
+        )
         self.audit.record(
             entity_id,
             actor,
             action,
             entity["status"],
             updated["status"],
-            {"patch": patch},
+            {"patch": patch, "version": updated["version"]},
         )
         return updated
+
+    @staticmethod
+    def _ensure_frozen_association(entity, action, patch):
+        # 关联动作固化：关联之后任何动作都不能改写已采用/存疑报文、质量分与口径
+        if entity["kind"] != "event":
+            return
+        frozen = entity["data"].get("association")
+        if not frozen:
+            return
+        if action == "associate":
+            raise ValidationError("association is frozen and cannot be recomputed")
+        incoming = patch.get("association")
+        if incoming is not None and incoming != frozen:
+            raise ValidationError("association snapshot is immutable after freezing")
 
     def get(self, entity_id):
         entity = self.repository.get_entity(entity_id)
         if not entity:
             raise NotFoundError("entity not found: " + entity_id)
         return entity
+
+    def detail(self, entity_id):
+        entity = self.get(entity_id)
+        detail = dict(entity)
+        detail["summary"] = event_summary(entity)
+        detail["versions"] = self.repository.list_versions(entity_id)
+        return detail
+
+    def versions(self, entity_id):
+        if not self.repository.get_entity(entity_id):
+            raise NotFoundError("entity not found: " + entity_id)
+        return self.repository.list_versions(entity_id)
 
     def list(self, kind=None, status=None):
         if kind:
