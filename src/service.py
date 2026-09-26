@@ -45,9 +45,14 @@ class DomainService:
         next_status, patch = self.rules.validate_transition(
             actor, entity, action, dict(data or {}), self._lookup
         )
+        if action != "associate":
+            # 关联快照在 associate 时固化，后续补报、复核、修订都改不动
+            patch.pop("association", None)
         merged = dict(entity["data"])
         merged.update(patch)
-        updated = self.repository.update_entity(entity_id, expected, next_status, merged)
+        updated = self.repository.update_entity(
+            entity_id, expected, next_status, merged, actor_id=actor.user_id
+        )
         self.audit.record(
             entity_id,
             actor,
@@ -64,10 +69,23 @@ class DomainService:
             raise NotFoundError("entity not found: " + entity_id)
         return entity
 
-    def list(self, kind=None, status=None):
+    def entity_detail(self, entity_id):
+        entity = self.get(entity_id)
+        detail = dict(entity)
+        detail["stage"] = self.rules.stage_of(entity["status"])
+        if entity["kind"] == "event":
+            detail["summary"] = self.rules.event_summary(entity)
+        detail["versions"] = self.repository.list_versions(entity_id)
+        return detail
+
+    def list(self, kind=None, status=None, stage=None):
         if kind:
             kind = self.rules.normalize_kind(kind)
-        return self.repository.list_entities(kind=kind, status=status)
+        statuses = self.rules.stage_statuses(stage) if stage else None
+        items = self.repository.list_entities(kind=kind, status=status, statuses=statuses)
+        for entity in items:
+            entity["stage"] = self.rules.stage_of(entity["status"])
+        return items
 
     def audit_log(self, entity_id=None):
         return self.repository.list_audit(entity_id=entity_id)

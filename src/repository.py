@@ -54,6 +54,15 @@ class SQLiteRepository:
                     created_at TEXT NOT NULL,
                     PRIMARY KEY(actor_id, idem_key)
                 );
+                CREATE TABLE IF NOT EXISTS entity_versions (
+                    entity_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(entity_id, version)
+                );
             """)
 
     @staticmethod
@@ -78,6 +87,11 @@ class SQLiteRepository:
                 "VALUES (?, ?, ?, 1, ?, ?, ?, ?)",
                 (entity_id, kind, status, payload, actor_id, now, now),
             )
+            connection.execute(
+                "INSERT INTO entity_versions(entity_id, version, status, data, actor_id, created_at) "
+                "VALUES (?, 1, ?, ?, ?, ?)",
+                (entity_id, status, payload, actor_id, now),
+            )
         return self.get_entity(entity_id)
 
     def get_entity(self, entity_id):
@@ -87,13 +101,16 @@ class SQLiteRepository:
             ).fetchone()
         return self._entity_from_row(row) if row else None
 
-    def list_entities(self, kind=None, status=None):
+    def list_entities(self, kind=None, status=None, statuses=None):
         clauses = []
         params = []
         if kind:
             clauses.append("kind = ?")
             params.append(kind)
-        if status:
+        if statuses:
+            clauses.append("status IN (%s)" % ",".join("?" for _ in statuses))
+            params.extend(statuses)
+        elif status:
             clauses.append("status = ?")
             params.append(status)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -110,7 +127,7 @@ class SQLiteRepository:
             if (entity["id"] == value if field == "id" else entity["data"].get(field) == value)
         ]
 
-    def update_entity(self, entity_id, expected_version, status, data):
+    def update_entity(self, entity_id, expected_version, status, data, actor_id=""):
         now = utcnow()
         payload = json.dumps(data, ensure_ascii=False, sort_keys=True)
         connection = self._connect()
@@ -132,6 +149,11 @@ class SQLiteRepository:
                 "WHERE id = ? AND version = ?",
                 (status, payload, now, entity_id, current_version),
             )
+            connection.execute(
+                "INSERT INTO entity_versions(entity_id, version, status, data, actor_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (entity_id, current_version + 1, status, payload, actor_id, now),
+            )
             connection.commit()
         except Exception:
             connection.rollback()
@@ -139,6 +161,23 @@ class SQLiteRepository:
         finally:
             connection.close()
         return self.get_entity(entity_id)
+
+    def list_versions(self, entity_id):
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM entity_versions WHERE entity_id = ? ORDER BY version",
+                (entity_id,),
+            ).fetchall()
+        return [
+            {
+                "version": int(row["version"]),
+                "status": row["status"],
+                "data": json.loads(row["data"]),
+                "actor_id": row["actor_id"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
 
     def append_audit(self, entity_id, actor_id, actor_role, action, from_status, to_status, detail):
         with self._connect() as connection:

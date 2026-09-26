@@ -29,13 +29,22 @@ python3 app.py --db ./data.db --port 8307
 ## 主要接口
 
 - `GET /health`：健康检查。
-- `GET /api/<kind>`：按对象类型查询，可用`?status=`过滤。
+- `GET /api/<kind>`：按对象类型查询，可用`?status=`过滤；事件支持`?stage=candidate|review|published`按候选、待复核、已发布分组查询。
 - `POST /api/<kind>`：创建对象；请求体为JSON。
 - `GET /api/entities/<id>`：读取对象当前版本。
+- `GET /api/entities/<id>/detail`：读取对象详情，事件附带摘要（`summary`）与历史版本（`versions`）。
 - `POST /api/entities/<id>/actions`：提交`{"action":"动作名","data":{...},"expected_version":数字}`。
 - `GET /api/audit`：读取审计记录。
 
 请求身份通过`X-User-Id`和`X-Role`请求头传入。创建和动作的可执行角色由规则引擎控制。
+
+## 关联质量关口
+
+- 事件在`candidate`状态下可用`supplement`动作追加后补报文；`associate`时一次性评估并固化快照（采用/存疑/重复报文、质量分、冻结版本号），之后的补报与修订都改不动这份快照。
+- 同一台站重复上报只保留时间偏移绝对值更小的一份，被丢弃的记入`duplicate_reports`。
+- 时间偏移绝对值超过120秒或距离超过3公里的报文标为存疑（`suspicious_reports`），不参与有效计数。
+- 有效报文少于3条或平均距离超过2公里时`review`被拦截；仅管理员可在复核时附`override_reason`写明依据放行，依据记入`quality_override`。
+- 质量分口径：100分起，每条存疑扣15分，平均距离每公里扣10分，有效报文每缺1条（不足3条）扣15分，下限0分。
 
 ## 测试
 
